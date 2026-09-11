@@ -6,10 +6,19 @@
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/sys/printk.h>
 
-#define APP_SAMPLE_RATE_HZ 100U
-#define APP_SAMPLE_PERIOD K_USEC(1000000U / APP_SAMPLE_RATE_HZ)
+// #define MATCH_OUTPUT_RATE
+#define APP_SENSOR_NODE DT_ALIAS(accel0)
 
-const struct device *sensor = DEVICE_DT_GET(DT_ALIAS(accel0));
+#ifdef MATCH_OUTPUT_RATE
+#define APP_SAMPLE_RATE_HZ DT_PROP(APP_SENSOR_NODE, odr_hz)
+#else
+#define APP_SAMPLE_RATE_HZ 100U
+#endif
+
+#define APP_SAMPLE_PERIOD K_USEC(DIV_ROUND_UP(1000000U, APP_SAMPLE_RATE_HZ))
+
+static const struct device *const sensor =
+	DEVICE_DT_GET(APP_SENSOR_NODE);
 
 static void sensor_work_handler(struct k_work *work)
 {
@@ -23,6 +32,7 @@ static void sensor_work_handler(struct k_work *work)
 	if (ret != 0)
 	{
 		printk("Fetch failed: %d\n", ret);
+		return;
 	}
 
 	timestamp_ms = k_uptime_get();
@@ -56,7 +66,7 @@ int main(void)
 		printk("Sensor not ready\n");
 		return 1;
 	}
-
+	printk("App sampling rate: %u Hz\n", (unsigned int)APP_SAMPLE_RATE_HZ);
 	k_timer_start(&sample_timer, APP_SAMPLE_PERIOD, APP_SAMPLE_PERIOD);
 
 	return 0;
