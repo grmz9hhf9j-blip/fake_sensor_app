@@ -1,0 +1,10 @@
+tests:
+  app.ringbuf:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    harness: ztest
+    tags:
+      - ringbuf
+    timeout: 30
