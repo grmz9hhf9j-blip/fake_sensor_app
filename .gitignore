@@ -1,0 +1,11 @@
+/.west/
+/zephyr/
+/modules/
+/bootloader/
+/tools/
+
+build/
+build-*/
+twister-out/
+twister-out.*/
+__pycache__/
