@@ -1,0 +1,12 @@
+/ {
+	aliases {
+		accel0 = &xyz0;
+	};
+
+	xyz0: accel {
+		compatible = "sensor,xyz";
+		status = "okay";
+		label = "FAKE_XYZ";
+		odr-hz = <100>;
+	};
+};
