@@ -10,7 +10,7 @@ manifest:
       import: true
     - name: sensor_xyz
       url: https://github.com/grmz9hhf9j-blip/fake_accel_sensor
-      revision: main
+      revision: 0b6939c53a96c68fc10faf1bdd2c89fb384a369c
       path: modules/sensor_xyz
   self:
     path: .
