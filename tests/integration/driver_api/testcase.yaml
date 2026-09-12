@@ -1,0 +1,11 @@
+tests:
+  app.driver_api:
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+    harness: ztest
+    tags:
+      - sensor
+      - integration
+    timeout: 30
