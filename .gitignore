@@ -1,8 +1,10 @@
 /.west/
 /zephyr/
-/modules/
 /bootloader/
 /tools/
+
+/modules/*
+!/modules/sensor_xyz/
 
 build/
 build-*/
