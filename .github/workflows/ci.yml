@@ -64,7 +64,7 @@ jobs:
       - name: Record dependency revisions
         run: |
           mkdir -p build
-          west manifest --freeze > build/west-frozen.yml
+          west manifest --freeze --active-only > build/west-frozen.yml
 
       - name: Build application
         run: |
