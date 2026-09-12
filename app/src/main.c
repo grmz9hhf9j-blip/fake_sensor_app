@@ -8,7 +8,12 @@
 #include <zephyr/sys/atomic.h>
 #include <zephyr/devicetree.h>
 
+#include <errno.h>
+#include <zephyr/shell/shell.h>
+#include <zephyr/shell/shell_uart.h>
+
 #include "ringbuf.h"
+#include <string.h>
 
 // #define MATCH_OUTPUT_RATE
 #define APP_SENSOR_NODE DT_ALIAS(accel0)
@@ -26,6 +31,7 @@
 #define APP_CONSUMER_STACK_SIZE 4096
 #define APP_CONSUMER_PRIORITY 7
 
+static atomic_t stream_enabled = ATOMIC_INIT(1);
 
 static const struct device *const sensor =
 	DEVICE_DT_GET(APP_SENSOR_NODE);
@@ -33,6 +39,34 @@ static const struct device *const sensor =
 static ringbuf_t *sample_buffer;
 static atomic_t dropped_samples;
 static atomic_t sensor_errors;
+
+static atomic_t dump_requested;
+
+K_SEM_DEFINE(consumer_wake, 0, 1);
+
+static int cmd_samples_stream(const struct shell *sh,
+							  size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+
+	if (strcmp(argv[1], "on") == 0)
+	{
+		atomic_set(&stream_enabled, 1);
+	}
+	else if (strcmp(argv[1], "off") == 0)
+	{
+		atomic_set(&stream_enabled, 0);
+	}
+	else
+	{
+		shell_error(sh, "Use: samples stream on|off");
+		return -EINVAL;
+	}
+
+	shell_print(sh, "Streaming %s", argv[1]);
+
+	return 0;
+}
 
 static void sensor_work_handler(struct k_work *work)
 {
@@ -76,9 +110,19 @@ static void sample_timer_handler(struct k_timer *timer)
 	k_work_submit(&sensor_work);
 }
 K_TIMER_DEFINE(sample_timer, sample_timer_handler, NULL);
-K_TIMER_DEFINE(drain_timer, NULL, NULL);
+
+static void drain_timer_handler(struct k_timer *timer)
+{
+	ARG_UNUSED(timer);
+
+	k_sem_give(&consumer_wake);
+}
+
+K_TIMER_DEFINE(drain_timer, drain_timer_handler, NULL);
+
 static void consumer_entry(void *p1, void *p2, void *p3)
 {
+	const struct shell *sh = shell_backend_uart_get_ptr();
 	struct accel_sample batch[APP_DRAIN_MAX];
 	uint64_t consumed = 0;
 	int64_t last_stats_ms = k_uptime_get();
@@ -89,36 +133,45 @@ static void consumer_entry(void *p1, void *p2, void *p3)
 
 	while (true)
 	{
-		k_timer_status_sync(&drain_timer);
+		k_sem_take(&consumer_wake, K_FOREVER);
 
+		bool requested = atomic_set(&dump_requested, 0) != 0;
 		size_t count = rb_drain(sample_buffer, batch,
 								ARRAY_SIZE(batch));
+		bool streaming = atomic_get(&stream_enabled) != 0;
+		if (requested)
+		{
+			shell_print(sh, "{\"type\":\"dump\",\"count\":%u}",
+						(unsigned int)count);
+		}
 
-		for (size_t i = 0; i < count; ++i)
+		for (size_t i = 0; i < count && (streaming || requested); ++i)
 		{
 			const struct accel_sample *sample = &batch[i];
 
-			printk("{\"t_ms\":%lld,\"x_ms2\":%.6f,"
-				   "\"y_ms2\":%.6f,\"z_ms2\":%.6f}\n",
-				   (long long)sample->t_ms,
-				   (double)sample->ax_ms2,
-				   (double)sample->ay_ms2,
-				   (double)sample->az_ms2);
+			shell_print(sh,
+						"{\"t_ms\":%lld,\"ax_ms2\":%.6f,"
+						"\"ay_ms2\":%.6f,\"az_ms2\":%.6f}",
+						(long long)sample->t_ms,
+						(double)sample->ax_ms2,
+						(double)sample->ay_ms2,
+						(double)sample->az_ms2);
 		}
 
 		consumed += count;
 
 		int64_t now_ms = k_uptime_get();
 
-		if (now_ms - last_stats_ms >= 1000)
+		if (streaming && now_ms - last_stats_ms >= 1000)
 		{
-			printk("{\"type\":\"stats\",\"consumed\":%llu,"
-				   "\"queued\":%u,\"dropped\":%ld,"
-				   "\"sensor_errors\":%ld}\n",
-				   (unsigned long long)consumed,
-				   (unsigned int)rb_size(sample_buffer),
-				   (long)atomic_get(&dropped_samples),
-				   (long)atomic_get(&sensor_errors));
+			shell_print(sh,
+						"{\"type\":\"stats\",\"consumed\":%llu,"
+						"\"queued\":%u,\"dropped\":%ld,"
+						"\"sensor_errors\":%ld}",
+						(unsigned long long)consumed,
+						(unsigned int)rb_size(sample_buffer),
+						(long)atomic_get(&dropped_samples),
+						(long)atomic_get(&sensor_errors));
 
 			last_stats_ms = now_ms;
 		}
@@ -126,8 +179,35 @@ static void consumer_entry(void *p1, void *p2, void *p3)
 }
 
 K_THREAD_DEFINE(consumer_thread, APP_CONSUMER_STACK_SIZE,
-		consumer_entry, NULL, NULL, NULL,
-		APP_CONSUMER_PRIORITY, 0, SYS_FOREVER_MS);
+				consumer_entry, NULL, NULL, NULL,
+				APP_CONSUMER_PRIORITY, 0, SYS_FOREVER_MS);
+
+static int cmd_samples_dump(const struct shell *sh,
+							size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	if (!atomic_cas(&dump_requested, 0, 1))
+	{
+		shell_error(sh, "A dump is already pending");
+		return -EBUSY;
+	}
+
+	k_sem_give(&consumer_wake);
+
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+	samples_commands,
+	SHELL_CMD_ARG(dump, NULL, "Dump up to 20 queued samples",
+				  cmd_samples_dump, 1, 0),
+	SHELL_CMD_ARG(stream, NULL, "Enable or disable automatic output",
+				  cmd_samples_stream, 2, 0),
+	SHELL_SUBCMD_SET_END);
+
+SHELL_CMD_REGISTER(samples, &samples_commands, "Sample commands", NULL);
 
 int main(void)
 {
